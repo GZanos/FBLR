@@ -1,0 +1,419 @@
+# Note, this code is set up for the Immunotherapy dataset from UCI ML Repository. A copy is attached here.
+
+
+#----------------------* Packages Required *----------------------------------
+library(rjags)
+library(ggpubr)
+library(ks)
+library(coda)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(bayesplot)
+library(R2jags)
+library(runjags)
+library(HDInterval)
+library(FuzzyR)
+library(FuzzyNumbers)
+library(pROC)
+source("DBDA2E-utilities.R")
+
+#----------------------* The Data *---------------------------------------------
+raw_data <- read.csv("Immunotherapy.csv") #Import line
+
+zx <- scale(raw_data) #scale the data
+zx <- zx[, -which(colnames(zx) == "Result_of_Treatment")] #keep only predictors
+
+## Create Inv. Cov. Matrix ##
+raw_data.v2 <- raw_data %>%
+  select(sex, age, Time, Number_of_Warts, Type, Area, induration_diameter)
+  
+# Covariance Matrix
+cov_matrix <- cov(raw_data.v2)
+cov_matrix <- as.matrix(cov_matrix)
+
+# Cov to Cor
+cov2cor_matrix <- cov2cor(cov_matrix)
+cov2cor_matrix <- as.matrix(cov2cor_matrix)
+corr_matrix <- round(cov2cor_matrix,1)
+
+# Inv Cov
+inv_cov <- solve(cov_matrix)
+inv_cov <- as.matrix(inv_cov)
+
+# Inv Corr
+inv_corr <- solve(corr_matrix)
+inv_corr <- as.matrix(inv_corr)
+
+
+## Data Definitions ##
+y = raw_data[,"Result_of_Treatment"]
+x = (as.matrix(raw_data[,c("sex","age","Time","Number_of_Warts", "Type", "Area", "induration_diameter")]))
+if ( any( !is.finite(y) ) ) { stop("All y values must be finite.") }
+if ( any( !is.finite(x) ) ) { stop("All x values must be finite.") }
+
+dataList = list(
+  x = x ,
+  y = y ,
+  Nx = dim(x)[2] ,
+  Ntotal = dim(x)[1],
+  mu = array(0, 7),
+  zInvCovMat = inv_corr,
+  Nbeta = 7
+)
+
+
+#===============================================================================
+
+#----------------------* JAGS Model *-------------------------------------------
+
+modelString = "
+  # Standardize the data:
+  data {
+    for ( j in 1:Nx ) {
+      xm[j]  <- mean(x[,j])
+      xsd[j] <-   sd(x[,j])
+      for ( i in 1:Ntotal ) {
+        zx[i,j] <- ( x[i,j] - xm[j] ) / xsd[j]
+      }
+    }
+  }
+  
+  # Specify the model for standardized data:
+model {
+  for (i in 1:Ntotal) {
+    m[i] <- guess * 0.55 + (1 - guess) * ilogit(zbeta0 + sum(zbeta[1:Nx] * zx[i, 1:Nx]))
+    y[i] ~ dbern(m[i])
+  }
+  
+  guess ~ dbeta(1, 9)
+    
+    # Unimformative Priors on standardized scale:
+    zbeta0 ~ dnorm( 0 , 1/4 ) 
+    for ( i in 1:7){
+      zbeta[i] ~ dnorm( 0 , 1/4)
+    }
+    
+    # Informed priors using gathered information:
+    #zbeta[1] ~ dnorm( (0.001/10) , (3.5/xsd[1]^2))
+    #zbeta[2] ~ dnorm( (0.001/10) , (1.0/xsd[2]^2)) 
+    #zbeta[3] ~ dnorm( (0.001/10) , (3.5/xsd[3]^2))
+    #zbeta[4] ~ dnorm( (0.001/10) , (2.5/xsd[4]^2))
+    #zbeta[5] ~ dnorm( (0.001/10) , (4.0/xsd[5]^2))
+    #zbeta[6] ~ dnorm( (0.001/10) , (1.5/xsd[6]^2))
+    #zbeta[7] ~ dnorm( (0.001/10) , (2.0/xsd[7]^2))
+    
+    # Informed Priors via Inv. Cov. - standardized scale:
+    #zbeta0 ~ dnorm( 0 , 1/2^2 )
+    #zbeta ~ dmnorm( mu[1:Nbeta] , zInvCovMat[1:Nbeta,1:Nbeta] )
+    
+    # Transform to original scale:
+    beta[1:Nx] <- zbeta[1:Nx] / xsd[1:Nx] 
+    beta0 <- zbeta0 - sum( zbeta[1:Nx] * xm[1:Nx] / xsd[1:Nx] )
+  }
+  "
+writeLines( modelString , con="TEMPmodel.txt" )
+
+
+#----------------------* JAGS Model Implementation *-------------------------
+parameters = c( "beta0" ,  "beta" ,  
+                "zbeta0" , "zbeta" )
+
+#Generate MCMC
+runJagsOut <- run.jags( model="TEMPmodel.txt" , 
+                        monitor=parameters , 
+                        data=dataList ,  
+                        n.chains= 4 ,
+                        adapt= 500 ,
+                        burnin= 500 , 
+                        thin= 7 ,
+                        sample = 500, 
+                        summarise=FALSE ,
+                        plots=FALSE )
+codaSamples = as.mcmc.list( runJagsOut )        
+
+#MCMC Diagnostics
+diagMCMC(codaSamples, parName = "beta0")
+diagMCMC(codaSamples, parName = "beta[1]")
+diagMCMC(codaSamples, parName = "beta[2]")
+diagMCMC(codaSamples, parName = "beta[3]")
+diagMCMC(codaSamples, parName = "beta[4]")
+diagMCMC(codaSamples, parName = "beta[5]")
+diagMCMC(codaSamples, parName = "beta[6]")
+diagMCMC(codaSamples, parName = "beta[7]")
+diagMCMC(codaSamples, parName = "zbeta0")
+diagMCMC(codaSamples, parName = "zbeta[1]")
+diagMCMC(codaSamples, parName = "zbeta[2]")
+diagMCMC(codaSamples, parName = "zbeta[3]")
+diagMCMC(codaSamples, parName = "zbeta[4]")
+diagMCMC(codaSamples, parName = "zbeta[5]")
+diagMCMC(codaSamples, parName = "zbeta[6]")
+diagMCMC(codaSamples, parName = "zbeta[7]")
+graphics.off()
+
+#Summary Stats
+#model_summary <- summary(runJagsOut)
+smryMCMC = function(  codaSamples , compVal = NULL,  saveName=NULL) {
+  summaryInfo = NULL
+  mcmcMat = as.matrix(codaSamples,chains=TRUE)
+  paramName = colnames(mcmcMat)
+  for ( pName in paramName ) {
+    if (pName %in% colnames(compVal)){
+      if (!is.na(compVal[pName])) {
+        summaryInfo = rbind( summaryInfo , summarizePost( paramSampleVec = mcmcMat[,pName] , 
+                                                          compVal = as.numeric(compVal[pName]) ))
+      }
+      else {
+        summaryInfo = rbind( summaryInfo , summarizePost( paramSampleVec = mcmcMat[,pName] ) )
+      }
+    } else {
+      summaryInfo = rbind( summaryInfo , summarizePost( paramSampleVec = mcmcMat[,pName] ) )
+    }
+  }
+  rownames(summaryInfo) = paramName
+  # summaryInfo = rbind( summaryInfo , 
+  #                      "tau" = summarizePost( mcmcMat[,"tau"] ) )
+  if ( !is.null(saveName) ) {
+    write.csv( summaryInfo , file=paste(saveName,"SummaryInfo.csv",sep="") )
+  }
+  return( summaryInfo )
+}
+
+model_summary <- smryMCMC(codaSamples)
+
+#HD: Added the following to control the width of Bayes intervals #GC: thank you
+model_summary2 <- summary(codaSamples,quantiles = c(0.01, .5, 0.99))
+HDIs <- model_summary2$quantiles
+
+model_summary3 <- summary(runJagsOut)
+
+#Density Plots
+par(mfrow = c(3, 3))
+densplot(codaSamples[, "beta0"], xlim = c(-5, 25), main = "Density Plot for beta0")
+densplot(codaSamples[, "beta[1]"], xlim = c(-5, 5), main = "Density Plot for beta[1]")
+densplot(codaSamples[, "beta[2]"], xlim = c(-1, 1), main = "Density Plot for beta[2]")
+densplot(codaSamples[, "beta[3]"], xlim = c(-3, 2), main = "Density Plot for beta[3]")
+densplot(codaSamples[, "beta[4]"], xlim = c(-2, 2), main = "Density Plot for beta[4]")
+densplot(codaSamples[, "beta[5]"], xlim = c(-5, 5), main = "Density Plot for beta[5]")
+densplot(codaSamples[, "beta[6]"], xlim = c(-0.2, 0.2), main = "Density Plot for beta[6]")
+densplot(codaSamples[, "beta[7]"], xlim = c(-1, 1), main = "Density Plot for beta[7]")
+par(mfrow = c(1, 1))
+
+
+#----------------------* GFN Classification Method *-----------------------------
+
+#GC: a Gaussian fuzzy number is made up of GaussianFuzzy(μ,σ) (ref: Zhou et al 2016)
+#GC: so we first need to find the mean, SD and 95-CI
+beta_means <- model_summary[10:17, "Mode"]
+#beta_lower <- model_summary[10:17, "Lower95"]
+#beta_upper <- model_summary[10:17, "Upper95"]
+beta_sd <- model_summary3[9:16, "SD"]
+
+# store the three elements in a 3-column matrix
+gaussian_fuzzy_matrix <- matrix(NA, nrow = length(beta_means), ncol = 2)
+for (i in 1:length(beta_means)) {
+  gaussian_fuzzy_matrix[i, ] <- c(beta_means[i], beta_sd[i])
+}
+
+
+## GFN Operations ##
+
+## Addition ##
+GFN.add <- function(A, B) {
+  mean <- A[1]+B[1] 
+  variance <- A[2]+B[2] 
+  return(c(mean, variance))
+}
+
+## Subtraction ##
+GFN.sub <- function(A, B) {
+  mean <- A[1]-B[1]
+  variance <- A[2]+B[2] 
+  return(c(mean, variance))
+}
+
+## Multiplication ##
+GFN.multi <- function(A, B) {
+  mean <- A[1]*B[1]
+  variance <- (B[2]*A[1]^2)+(A[2]*B[1]^2)+(B[2]*A[2])
+  return(c(mean, variance))
+}
+
+## Division ##
+GFN.div <- function(A, B) {
+  mean <- A[1]*((1/B[1])+(B[2]/B[1]^3))
+  variance <- (A[1]^2*(1/B[1]^4)*B[2])+((1/B[1]^2)*A[2])-(A[2]*(1/B[1]^4)*B[2])
+  return(c(mean, variance))
+}
+
+
+# New exp() function
+# source: https://towardsdatascience.com/log-normal-distribution-a-simple-explanation-7605864fb67c
+GFN.exp <- function(A) {
+  mean <- exp(A[1]*A[2]) #exp(A[1]+((1/2)*(A[2])))
+  variance <- ((exp(A[2])-1)*(exp((2*A[1])+(A[2]))))
+  return(c(mean, variance))
+}
+
+## Reciprocal ##
+GFN.reci <- function(A) {
+  mean <- 1/A[1] 
+  variance <- (1/A[1]^4)*A[2] 
+  return(c(mean, variance))
+}
+
+
+
+## GFN Logistic Function -- GFN/Crisp Operations Method ##
+#-----------------------------------------------------------------------------------------------------------#
+
+#GC15: GFN*crisp
+GFN.multi.crisp_GFN <- function(A, B) {
+  #HD from 04/04 Teams chat, E(beta*x_i) = x_i * \mu_beta:
+  mean <- A[1]*B 
+  #HD from 04/04 Teams chat: V(beta*x_i) = x_i^{2}\sigma_{beta}^{2}:
+  variance <- B^2 * A[2]^2 #GC15: this is the very first function we use and SD converted to variance here.
+  return(c(mean, variance))
+}
+
+#GC15: GFN+crisp
+GFN.add.crisp_GFN <- function(A, B) {
+  mean <- A[1]+B 
+  variance <- A[2] 
+  return(c(mean, variance))
+}
+
+#GC15: So logistic math is as follows.
+n <- nrow(zx)
+Np <- ncol(zx)
+predy <- matrix(NA, nrow = n, ncol = 2)
+b0 <- gaussian_fuzzy_matrix[1,]
+b <- gaussian_fuzzy_matrix[-1,]
+
+for (i in 1:n) {  
+  bx <- b0
+  for(j in 1:Np) {
+    bx <- GFN.add(bx, GFN.multi.crisp_GFN(b[j,],zx[i,j])) 
+  }
+  predy[i,] <- GFN.reci(GFN.add.crisp_GFN(GFN.exp(GFN.multi.crisp_GFN(bx,-1)),1)) 
+}
+
+GFN.probabilites <- predy 
+#-----------------------------------------------------------------------------------------------------------#
+
+#-------------------------------------- z-score Classification ---------------------------------------------#
+# We can do z-score classification
+z.score_classify <- function(probabilities, Tau) {
+  classifications <- numeric(nrow(probabilities))
+  for (i in 1:nrow(probabilities)) {
+    mean_Tau <- Tau[1]
+    sd_Tau <- Tau[2]
+    mean_prob.a <- probabilities[i, 1]
+    # Calculate z-score
+    z_prob.a <- (mean_prob.a - mean_Tau) / sd_Tau
+    if (z_prob.a >= 0) {
+      classifications[i] <- 1
+    } else {
+      classifications[i] <- 0
+    }
+  }
+  return(classifications)
+}
+#-----------------------------------------------------------------------------------------------------------#
+
+
+
+## Classification with Tau optimization to chase desired performance outcome ##
+#-------------------------------------- z-score Classification ---------------------------------------------#
+# Definitions
+min_tau1 <- 0.001 #min of mu
+max_tau1 <- 0.999 #max of mu
+min_tau2 <- 0.001 #min of variance
+max_tau2 <- 0.999 #max of variance
+
+
+# Function for performance measures
+compute_performance <- function(gfn_tau) {
+  gaussian.pred.bin <- z.score_classify(GFN.probabilites, gfn_tau)
+  
+  tp <- sum(gaussian.pred.bin == 1 & y == 1)
+  tn <- sum(gaussian.pred.bin == 0 & y == 0)
+  fp <- sum(gaussian.pred.bin == 1 & y == 0)
+  fn <- sum(gaussian.pred.bin == 0 & y == 1)
+  
+  sensitivity <- round(tp / (tp + fn),3)
+  specificity <- round(tn / (tn + fp),3)
+  precision <- round(tp / (tp + fp),3)
+  recall <- sensitivity
+  f1_score <- round(2 * (precision * recall) / (precision + recall),3)
+  mcc <- round(((tp * tn) - (fp * fn)) / sqrt((tp + fp) * (tp + fn) * (tn + fp) * (tn + fn)),3)
+  
+  list(sensitivity = sensitivity, specificity = specificity, f1_score = f1_score, mcc = mcc)
+}
+
+# Df to store results
+results_df <- data.frame(
+  Tau_Mean = numeric(),
+  Tau_Variance = numeric(),
+  Sensitivity = numeric(),
+  Specificity = numeric(),
+  F1_Score = numeric(),
+  MCC = numeric(),
+  TP = numeric(),
+  TN = numeric(),
+  FP = numeric(),
+  FN = numeric()
+)
+
+# Grid search
+row_index <- 1
+for (tau1 in seq(min_tau1, max_tau1, by = 0.05)) {
+  for (tau2 in seq(min_tau2, max_tau2, by = 0.05)) {
+    gfn_tau <- c(tau1, tau2)
+    gaussian.pred.bin <- z.score_classify(GFN.probabilites, gfn_tau)  
+    
+    # Compute performance measures
+    scores <- compute_performance(gfn_tau)  
+    results_df[row_index, "Tau_Mean"] <- tau1
+    results_df[row_index, "Tau_Variance"] <- tau2
+    results_df[row_index, c("Sensitivity", "Specificity", "F1_Score", "MCC")] <- unlist(scores)
+    
+    # Compute confusion matrix
+    fblr3.conf_matrix <- table(Actual = y, Predicted = gaussian.pred.bin)
+    results_df[row_index, c("TP", "TN", "FP", "FN")] <- c(fblr3.conf_matrix[2, 2], fblr3.conf_matrix[1, 1], 
+                                                          fblr3.conf_matrix[1, 2], fblr3.conf_matrix[2, 1])
+    
+    # Compute ROC/AUC
+    roc_data <- roc(y, gaussian.pred.bin)
+    results_df[row_index, "AUC"] <- auc(roc_data)
+    # HD16: If you don't do the following it'll write the results only to row_index = 1
+    row_index <- row_index + 1 # HD16 Added // #GC17: thank you, makes sense.
+  }
+}
+
+
+# Optimized performance output using AUC/ROC
+max_auc_index <- which.max(results_df$AUC)
+best_results <- results_df[max_auc_index, ]
+print(best_results)
+
+
+# Plot ROC curve
+gaussian.pred.bin.best <- z.score_classify(GFN.probabilites, c(best_results[,1],best_results[,2]))
+plot.roc(y, gaussian.pred.bin.best, main = "ROC Curve", col = "blue")
+
+
+# Print all results
+write.csv(results_df, "performance_results.csv") #classification performance results
+write.csv(gaussian.pred.bin.best, "predictions.csv") #predicted binary output
+write.csv(GFN.probabilites, "probabilities.csv") #fuzzy probabilities
+
+beta_means_raw <- model_summary[1:11, "Median"]
+beta_sd_raw <- model_summary[1:11, "SD"]
+gaussian_fuzzy_matrix_raw <- matrix(NA, nrow = length(beta_means_raw), ncol = 2)
+for (i in 1:length(beta_means_raw)) {
+  gaussian_fuzzy_matrix_raw[i, ] <- c(beta_means_raw[i], beta_sd_raw[i])
+}
+write.csv(gaussian_fuzzy_matrix_raw, "coefficients.csv") #fuzzy coefficients (raw, un-standardized)
+#-----------------------------------------------------------------------------------------------------------#
+
