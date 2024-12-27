@@ -1,0 +1,289 @@
+doFBLR <- function(data, burnIn = 1000, adapt = 100, numChain = 2, thinning = 2, 
+                   priorMeanZbeta = 0, priorVarZbeta = 1/4, RV_name = "Class", 
+                   min_tau1 = 0.001, max_tau1 = 0.999, min_tau2 = 0.001, max_tau2 = 0.999) {
+  # Load required libraries
+  library(rjags)
+  library(dplyr)
+  library(tidyr)
+  library(pROC)
+  library(coda)
+  library(runjags)
+  
+  # Preprocess data
+  y <- data[[RV_name]]
+  x <- as.matrix(data %>% select(-all_of(RV_name)))
+  
+  if (any(!is.finite(y))) stop("All y values must be finite.")
+  if (any(!is.finite(x))) stop("All x values must be finite.")
+  
+  # Standardize predictors
+  x_mean <- colMeans(x)
+  x_sd <- apply(x, 2, sd)
+  zx <- sweep(x, 2, x_mean, "-")
+  zx <- sweep(zx, 2, x_sd, "/")
+  
+  # JAGS data
+  dataList <- list(
+    zx = zx,
+    y = y,
+    Nx = ncol(zx),
+    Ntotal = nrow(zx),
+    lambda = 1  # Set lambda to a fixed value (adjust as needed)
+  )
+  
+  
+  # Write JAGS model to file with L1 regularization (Laplace prior for zbeta)
+  modelString <- "
+    model {
+        for (i in 1:Ntotal) {
+            m[i] <- guess * 0.5 + (1 - guess) * ilogit(zbeta0 + sum(zbeta[1:Nx] * zx[i,1:Nx]))
+            y[i] ~ dbern(m[i])
+        }
+        guess ~ dbeta(1, 11)
+        zbeta0 ~ dnorm(0, 1/4)
+        for (j in 1:Nx) {
+            # Laplace prior for zbeta (L1 regularization)
+            zbeta[j] ~ dnorm(0, lambda) # lambda controls the strength of regularization
+        }
+        # Hyperprior for lambda (scale parameter of the Laplace distribution)
+        lambda ~ dgamma(0.1, 0.1)  # Example Gamma prior for lambda
+    }
+"
+  writeLines(modelString, con = "TEMPmodel.txt")
+  
+  
+  
+  # Run JAGS model
+  parameters <- c("zbeta0", "zbeta")
+  runJagsOut <- run.jags(
+    model = "TEMPmodel.txt",
+    monitor = parameters,
+    data = dataList,
+    n.chains = numChain,
+    adapt = adapt,
+    burnin = burnIn,
+    thin = thinning,
+    summarise = FALSE,
+    plots = FALSE
+  )
+  codaSamples <- as.mcmc.list(runJagsOut)
+  
+  # Summary stats
+  model_summary <- summary(runJagsOut)
+  
+  # Dynamically determine indices for beta parameters
+  Nx <- dim(zx)[2]
+  
+  start_index <- which(rownames(model_summary) == "zbeta0")
+  if (length(start_index) == 0) stop("Start index for 'zbeta0' not found in model summary.")
+  end_index <- start_index + Nx 
+  
+  # Extract beta statistics dynamically
+  beta_means <- model_summary[start_index:end_index, "Median"]
+  beta_sd <- model_summary[start_index:end_index, "SD"]
+  
+  # Store the coefficients in a 2-column matrix
+  gaussian_fuzzy_matrix <- matrix(NA, nrow = length(beta_means), ncol = 2)
+  for (i in 1:length(beta_means)) {
+    gaussian_fuzzy_matrix[i, ] <- c(beta_means[i], beta_sd[i])
+  }
+  
+  ## GFN Operations ##
+  #-----------------------------------------------------------------------------------------------------------#
+  
+  ## Addition ##
+  GFN.add <- function(A, B) {
+    mean <- A[1]+B[1] 
+    variance <- A[2]+B[2] 
+    return(c(mean, variance))
+  }
+  
+  ## Subtraction ##
+  GFN.sub <- function(A, B) {
+    mean <- A[1]-B[1]
+    variance <- A[2]+B[2] 
+    return(c(mean, variance))
+  }
+  
+  ## Multiplication ##
+  GFN.multi <- function(A, B) {
+    mean <- A[1]*B[1]
+    variance <- (B[2]*A[1]^2)+(A[2]*B[1]^2)+(B[2]*A[2])
+    return(c(mean, variance))
+  }
+  
+  ## Division ##
+  GFN.div <- function(A, B) {
+    mean <- A[1]*((1/B[1])+(B[2]/B[1]^3))
+    variance <- (A[1]^2*(1/B[1]^4)*B[2])+((1/B[1]^2)*A[2])-(A[2]*(1/B[1]^4)*B[2])
+    return(c(mean, variance))
+  }
+  
+  # New exp() function
+  # source: https://towardsdatascience.com/log-normal-distribution-a-simple-explanation-7605864fb67c
+  GFN.exp <- function(A) {
+    mean <- exp(A[1]*A[2]) #exp(A[1]+((1/2)*(A[2])))
+    variance <- ((exp(A[2])-1)*(exp((2*A[1])+(A[2]))))
+    return(c(mean, variance))
+  }
+  
+  ## Reciprocal ##
+  GFN.reci <- function(A) {
+    mean <- 1/A[1] 
+    variance <- (1/A[1]^4)*A[2] 
+    return(c(mean, variance))
+  }
+  
+  GFN.multi.crisp_GFN <- function(A, B) {
+    mean <- A[1]*B 
+    variance <- B^2 * A[2]^2 
+    return(c(mean, variance))
+  }
+  
+  GFN.add.crisp_GFN <- function(A, B) {
+    mean <- A[1]+B 
+    variance <- A[2] 
+    return(c(mean, variance))
+  }
+  #-----------------------------------------------------------------------------------------------------------#
+  
+  
+  ## GFN Logistic Function -- GFN/Crisp Operations Method ##
+  #-----------------------------------------------------------------------------------------------------------#
+  n <- nrow(zx)
+  Np <- ncol(zx)
+  predy <- matrix(NA, nrow = n, ncol = 2)
+  b0 <- gaussian_fuzzy_matrix[1,]
+  b <- gaussian_fuzzy_matrix[-1,]
+  
+  for (i in 1:n) {  
+    bx <- b0
+    for(j in 1:Np) {
+      bx <- GFN.add(bx, GFN.multi.crisp_GFN(b[j,],zx[i,j])) 
+    }
+    predy[i,] <- GFN.reci(GFN.add.crisp_GFN(GFN.exp(GFN.multi.crisp_GFN(bx,-1)),1)) 
+  }
+  
+  GFN.probabilites <- predy 
+  #-----------------------------------------------------------------------------------------------------------#
+  
+  
+  #-------------------------------------- z-score Classification ---------------------------------------------#
+  
+  z.score_classify <- function(probabilities, Tau) {
+    classifications <- numeric(nrow(probabilities))
+    for (i in 1:nrow(probabilities)) {
+      mean_Tau <- Tau[1]
+      sd_Tau <- Tau[2]
+      mean_prob.a <- probabilities[i, 1]
+      # Calculate z-score
+      z_prob.a <- (mean_prob.a - mean_Tau) / sd_Tau
+      if (z_prob.a >= 0) {
+        classifications[i] <- 1
+      } else {
+        classifications[i] <- 0
+      }
+    }
+    return(classifications)
+  }
+  
+  
+  ## Classification with Tau optimization to chase desired performance outcome ##
+  #-------------------------------------- z-score Classification ---------------------------------------------#
+  
+  # Function for performance measures
+  compute_performance <- function(gfn_tau) {
+    gaussian.pred.bin <- z.score_classify(GFN.probabilites, gfn_tau)
+    
+    tp <- sum(gaussian.pred.bin == 1 & y == 1)
+    tn <- sum(gaussian.pred.bin == 0 & y == 0)
+    fp <- sum(gaussian.pred.bin == 1 & y == 0)
+    fn <- sum(gaussian.pred.bin == 0 & y == 1)
+    
+    sensitivity <- round(tp / (tp + fn),3)
+    specificity <- round(tn / (tn + fp),3)
+    precision <- round(tp / (tp + fp),3)
+    recall <- sensitivity
+    f1_score <- round(2 * (precision * recall) / (precision + recall),3)
+    mcc <- round(((tp * tn) - (fp * fn)) / sqrt((tp + fp) * (tp + fn) * (tn + fp) * (tn + fn)),3)
+    
+    list(sensitivity = sensitivity, specificity = specificity, f1_score = f1_score, mcc = mcc)
+  }
+  
+  # Df to store results
+  results_df <- data.frame(
+    Tau_Mean = numeric(),
+    Tau_Variance = numeric(),
+    Sensitivity = numeric(),
+    Specificity = numeric(),
+    F1_Score = numeric(),
+    MCC = numeric(),
+    TP = numeric(),
+    TN = numeric(),
+    FP = numeric(),
+    FN = numeric()
+  )
+  
+  # Grid search
+  row_index <- 1
+  for (tau1 in seq(min_tau1, max_tau1, by = 0.05)) {
+    for (tau2 in seq(min_tau2, max_tau2, by = 0.05)) {
+      gfn_tau <- c(tau1, tau2)
+      gaussian.pred.bin <- z.score_classify(GFN.probabilites, gfn_tau)  
+      
+      # Compute performance measures
+      scores <- compute_performance(gfn_tau)  
+      results_df[row_index, "Tau_Mean"] <- tau1
+      results_df[row_index, "Tau_Variance"] <- tau2
+      results_df[row_index, c("Sensitivity", "Specificity", "F1_Score", "MCC")] <- unlist(scores)
+      
+      # Compute confusion matrix
+      fblr3.conf_matrix <- table(Actual = y, Predicted = gaussian.pred.bin)
+      results_df[row_index, c("TP", "TN", "FP", "FN")] <- c(fblr3.conf_matrix[2, 2], fblr3.conf_matrix[1, 1], 
+                                                            fblr3.conf_matrix[1, 2], fblr3.conf_matrix[2, 1])
+      
+      # Compute ROC/AUC
+      roc_data <- roc(y, gaussian.pred.bin)
+      results_df[row_index, "AUC"] <- auc(roc_data)
+      row_index <- row_index + 1 
+    }
+  }
+  
+  
+  # Optimized performance output using AUC/ROC
+  max_auc_index <- which.max(results_df$AUC)
+  best_results <- results_df[max_auc_index, ]
+  print(best_results)
+  
+  
+  # Plot ROC curve
+  gaussian.pred.bin.best <- z.score_classify(GFN.probabilites, c(best_results[,1],best_results[,2]))
+  plot.roc(y, gaussian.pred.bin.best, main = "ROC Curve", col = "blue")
+  
+  
+  # Print all results
+  write.csv(results_df, "performance_results.csv") #classification performance results
+  write.csv(gaussian.pred.bin.best, "predictions.csv") #predicted binary output
+  write.csv(GFN.probabilites, "probabilities.csv") #fuzzy probabilities
+  
+  beta_means_raw <- model_summary[1:nrow(gaussian_fuzzy_matrix), "Median"]
+  beta_sd_raw <- model_summary[1:nrow(gaussian_fuzzy_matrix), "SD"]
+  gaussian_fuzzy_matrix_raw <- matrix(NA, nrow = length(beta_means_raw), ncol = 2)
+  for (i in 1:length(beta_means_raw)) {
+    gaussian_fuzzy_matrix_raw[i, ] <- c(beta_means_raw[i], beta_sd_raw[i])
+  }
+  write.csv(gaussian_fuzzy_matrix_raw, "coefficients.csv") #fuzzy coefficients (raw, un-standardized)
+  #-----------------------------------------------------------------------------------------------------------#
+  
+  
+  # Return the results
+  return(list(
+    coefficients = gaussian_fuzzy_matrix,
+    model_summary = model_summary,
+    samples = codaSamples
+  ))
+}
+
+# Example usage
+data <- read.csv("Algerian_forest_fires_dataset.csv")
+results <- doFBLR(data)
