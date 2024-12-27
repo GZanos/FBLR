@@ -1,4 +1,4 @@
-doFBLR <- function(data, burnIn = 1000, adapt = 100, numChain = 2, thinning = 2, 
+doFBLR <- function(data, burnIn = 1000, adapt = 100, numChain = 2, thinning = 7, 
                    priorMeanZbeta = 0, priorVarZbeta = 1/4, RV_name = "Class", 
                    min_tau1 = 0.001, max_tau1 = 0.999, min_tau2 = 0.001, max_tau2 = 0.999) {
   # Load required libraries
