@@ -97,8 +97,8 @@ z.score_classify <- function(probabilities, Tau) {
 #================================================================
 
 doFBLR <- function(data, burnIn = 500, adapt = 500, numChain = 4, thinning = 7, 
-                   priorMeanZbeta = 0, priorVarZbeta = 1/4, RV_name = "Class", 
-                   min_tau1 = 0.001, max_tau1 = 0.999, min_tau2 = 0.001, max_tau2 = 0.999, lambda = 1/4) {
+                   priorMeanZbeta = 0, lambda = 1/4, RV_name = "Class", 
+                   min_tau1 = 0.001, max_tau1 = 0.999, min_tau2 = 0.001, max_tau2 = 0.999) {
   
   # Preprocess data
   y <- data[[RV_name]]
