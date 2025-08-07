@@ -18,10 +18,10 @@ X3 <- c(15.25, 14.13, 14.13, 13.63, 14.75, 13.75, 15.25, 13.50)
 Y <- matrix(c(2.27, 5.83, 9.39, 0.33, 0.85, 1.37, 5.43, 13.93, 22.43, 
               1.56, 4.00, 6.44, 0.64, 1.65, 2.66, 0.62, 1.58, 2.54,
               3.19, 8.18, 13.17, 0.72, 1.85, 2.98), nrow = 8, ncol = 3, byrow = TRUE)
-#GC: Abdalla use 39% off vertex to fuzzify. So as per 21/11 meeting, we just take the vertex as the crisp value
+
 Y_crisp <- Y[,2] 
 #-----------------------------------------------------------#
-fuzzy.var <-(Y[,3]-Y[,2])*(Y[,2]-Y[,1]) # Bhatia–Davis inequality     (Y[,3]-Y[,1])^2/4 # HD: Take the variance for fuzification from the range using Popoviciu's inequality: V(X)<= (M-m)^2/4, M = sup X, m = inf X. https://en.wikipedia.org/wiki/Popoviciu%27s_inequality_on_variances
+fuzzy.var <-(Y[,3]-Y[,2])*(Y[,2]-Y[,1]) 
 
 ## Required GFN Operations ##
 #-----------------------------------------------------------#
@@ -57,17 +57,13 @@ GFN.div <- function(A, B) {
 
 ## Function to fuzzify X into GFN ##
 #-----------------------------------------------------------#
-# fuzzify <- function(X, variance) {
-#   matrix(c(X, rep(variance, length(X))), ncol = 2, 
-#          dimnames = list(NULL, c("Mean", "Variance")))
-# }
 
 fuzzify <- function(X, variance) {
   matrix(c(X, variance), ncol = 2, 
          dimnames = list(NULL, c("Mean", "Variance")))
 }
 
-GFN_X1 <- fuzzify(X1, fuzzy.var) #GC: just assume a small variance here for Xi
+GFN_X1 <- fuzzify(X1, fuzzy.var) 
 GFN_X2 <- fuzzify(X2, fuzzy.var)
 GFN_X3 <- fuzzify(X3, fuzzy.var)
 GFN_Y <- fuzzify(Y_crisp, fuzzy.var)
@@ -77,7 +73,6 @@ GFN_Y <- fuzzify(Y_crisp, fuzzy.var)
 
 ## Error functions ##
 #-----------------------------------------------------------#
-#GC: these should be the same as in Dr. Duygu's paper
 
 # MSE
 MSEe_GFN <- function(Y_true, Y_pred) {
@@ -168,30 +163,18 @@ MAEe_GFN <- function(Y_true, Y_pred) {
 ## Added HD: load the TFN coefficients ##
 #----------------------------------------------------------------------------
 
-# Coef values from Icen & Demirhan paper
-#A0 <- c(0.061, 0.316, 0.341)
-#A1 <- c(-0.271, -0.268, -0.129)
-#A2 <- c(-0.822, -0.727, -0.721)
-#A3 <- c(0.259, 0.294, 0.336)
-
 # Coef values from Icen & Gunay paper
 A0 <- c(-1.3474, -1.1216, -0.8193)
 A1 <- c(-0.6321, -0.6308, -0.6295)
 A2 <- c(-1.5218, -1.5198, -1.5149)
 A3 <- c(0.6687, 0.6714, 0.6726)
 
-# Coef values from Abdalla & Buckley paper
-#A0 <- c(-0.710, -0.539, -0.524)
-#A1 <- c(-0.610, -0.473, -0.472)
-#A2 <- c(-1.090, -1.089, -1.088)
-#A3 <- c(0.459, 0.487, 0.680)
 
-# HD: Directly use the optimised TFNs through Popoviciu's inequality to get the corresponding GFNs. No other optimisation required.
 
-Beta_0_sigma2 <- (A0[3]-A0[2])*(A0[2]-A0[1]) # Bhatia–Davis inequality  #  ((A0[3]-A0[1])^2)/4
-Beta_1_sigma2 <- (A1[3]-A1[2])*(A1[2]-A1[1]) #((A1[3]-A1[1])^2)/4
-Beta_2_sigma2 <- (A2[3]-A2[2])*(A2[2]-A2[1]) #((A2[3]-A2[1])^2)/4
-Beta_3_sigma2 <- (A3[3]-A3[2])*(A3[2]-A3[1]) #((A3[3]-A3[1])^2)/4
+Beta_0_sigma2 <- (A0[3]-A0[2])*(A0[2]-A0[1]) 
+Beta_1_sigma2 <- (A1[3]-A1[2])*(A1[2]-A1[1]) 
+Beta_2_sigma2 <- (A2[3]-A2[2])*(A2[2]-A2[1]) 
+Beta_3_sigma2 <- (A3[3]-A3[2])*(A3[2]-A3[1]) 
 
 
 Beta_0_mode <- A0[2]
@@ -208,11 +191,8 @@ Beta_3 <- Beta[4, ] # Coefficient for X3
 
 n <- nrow(GFN_X1)
 Pred_Y <- matrix(0, nrow = n, ncol = 2)
-# HD: Calculate predictions:
 for (i in 1:n) {
-  # Linear combination
   term1 <- GFN.multi(Beta_1, GFN_X1[i, ])
-  #HD: Check if the resulting GFNs are symmetric. Otherwise, we cannot do GFN addition!
   delta_Beta_1 <- abs(Beta_1[1]/sqrt(Beta_1[2]))
   delta_GFN_X1 <- abs(GFN_X1[i,1]/ sqrt(GFN_X1[i,2]))
   if ((delta_Beta_1 < 3) & (delta_GFN_X1 < 3)){
@@ -220,7 +200,6 @@ for (i in 1:n) {
   }
   
   term2 <- GFN.multi(Beta_2, GFN_X2[i, ])
-  #HD: Check if the resulting GFNs are symmetric. Otherwise, we cannot do GFN addition!
   delta_Beta_2 <- abs(Beta_2[1]/sqrt(Beta_2[2]))
   delta_GFN_X2 <- abs(GFN_X2[i,1]/ sqrt(GFN_X2[i,2]))
   if ((delta_Beta_2 < 3) & (delta_GFN_X2 < 3)){
@@ -228,7 +207,6 @@ for (i in 1:n) {
   }
   
   term3 <- GFN.multi(Beta_3, GFN_X3[i, ])
-  #HD: Check if the resulting GFNs are symmetric. Otherwise, we cannot do GFN addition!
   delta_Beta_3 <- abs(Beta_3[1]/sqrt(Beta_3[2]))
   delta_GFN_X3 <- abs(GFN_X3[i,1]/ sqrt(GFN_X3[i,2]))
   if ((delta_Beta_3 < 3) & (delta_GFN_X3 < 3)){
@@ -239,17 +217,16 @@ for (i in 1:n) {
   Pred_Y[i, ] <- sum_terms
 }
 
-#HD: Check if the resulting prediction GFNs are symmetric. Otherwise, we cannot take the mean/mode directly!
 
 smallDelta <- which(Pred_Y[,1]/sqrt(Pred_Y[,2]) < 0.4) # 0.4 is arbitrary depending on the variances
 
 
 
 
-predicted1 <- Pred_Y[,1] # HD: just use mean
-predicted2 <- Pred_Y[,1] + .1*Pred_Y[,2] # HD since all deltas are small, just shift the mean based on a fraction of variance. We don't know which direction to shift.
+predicted1 <- Pred_Y[,1] 
+predicted2 <- Pred_Y[,1] + .1*Pred_Y[,2] 
 predicted3 <- predicted1
-predicted3[smallDelta] <- Pred_Y[smallDelta,1] + .1*Pred_Y[smallDelta,2] # HD: Use mean for those with relatively large deltas and shift the mean based on a fraction of variance for those with small deltas.
+predicted3[smallDelta] <- Pred_Y[smallDelta,1] + .1*Pred_Y[smallDelta,2] 
 
 mean(abs(Y_crisp - predicted1))
 mean(abs(Y_crisp - predicted2))
@@ -272,7 +249,6 @@ mean(abs(Y_crisp - predictedTFN)/Y_crisp)
 #-----------------------------------------------------------#
 
 
-#GC5: what if we do something like this to optimize that 0.1 (called 'm' here)? It runs super quick and gives better results.
 #-----------------------------------------------------------#
 
 # Define the range of m to test
@@ -284,8 +260,8 @@ min_error <- Inf
 
 # Optimize m
 for (m in m_range) {
-  predicted1 <- Pred_Y[, 1] # Just use mean
-  predicted2 <- Pred_Y[, 1] + m * Pred_Y[, 2] # Shift mean based on fraction of variance
+  predicted1 <- Pred_Y[, 1] 
+  predicted2 <- Pred_Y[, 1] + m * Pred_Y[, 2] 
   predicted3 <- predicted1
   predicted3[smallDelta] <- Pred_Y[smallDelta, 1] + m * Pred_Y[smallDelta, 2]
   
@@ -305,8 +281,8 @@ for (m in m_range) {
 
 # Use the optimal m
 cat("Optimal m:", optimal_m, "\n")
-predicted1 <- Pred_Y[, 1] # Just use mean
-predicted2 <- Pred_Y[, 1] + optimal_m * Pred_Y[, 2] # Shift mean based on fraction of variance
+predicted1 <- Pred_Y[, 1] 
+predicted2 <- Pred_Y[, 1] + optimal_m * Pred_Y[, 2] 
 predicted3 <- predicted1
 predicted3[smallDelta] <- Pred_Y[smallDelta, 1] + optimal_m * Pred_Y[smallDelta, 2]
 
